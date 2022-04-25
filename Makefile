@@ -37,11 +37,12 @@ PROG_CFLAGS       :=
 #debugging options for decompression (Rayan)
 
 # Enable assertion by default (for now)
+#debug:=1
 ifeq ($(debug),1)
     asserts=1
     override CFLAGS += -O0 -g
 else
-    override CFLAGS += -O3 $(call cc-option,-flto=jobserver,-flto) -march=native -mtune=native -g
+    override CFLAGS += -O3 -w $(call cc-option,-flto=jobserver,-flto) -march=native -mtune=native -g
 endif
 
 ifndef asserts
@@ -51,7 +52,7 @@ endif
 ifneq ($(asserts),1)
      override CFLAGS+= -DNDEBUG
 endif
-
+#print_debug:=1
 ifeq ($(print_debug),1)
      override CFLAGS+= -DPRINT_DEBUG=1
 endif
@@ -83,7 +84,7 @@ endif
 ##############################################################################
 
 #### Quiet make is enabled by default.  Define V=1 to disable.
-
+#V:=1
 ifneq ($(findstring s,$(MAKEFLAGS)),s)
 ifneq ($(V),1)
         QUIET_CC       = @echo '  CXX     ' $@;

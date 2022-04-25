@@ -63,21 +63,27 @@
 
 #include "libdeflate.h"
 
+
+//TODO test
+std::atomic<int> nready_test;
+std::condition_variable ready_test;
+std::mutex ready_mtx_test;
+
+int tar_done = 3;
+
 /** The main class for the deflate decompression
  * Holds the decompressor tables and the input stream, but not the deflate window or output buffers
  */
-class DeflateParser
-{
-  public:
-    DeflateParser(const InputStream& in_stream)
-      : _in_stream(in_stream)
-    {}
+class DeflateParser {
+public:
+    DeflateParser(const InputStream &in_stream)
+            : _in_stream(in_stream) {}
 
     enum class block_result : unsigned {
-        SUCCESS              = 0, // Success, yet many work remaining
-        LAST_BLOCK           = 1, // Last block had just been decoded
+        SUCCESS = 0, // Success, yet many work remaining
+        LAST_BLOCK = 1, // Last block had just been decoded
         CAUGHT_UP_DOWNSTREAM = 2, // Caught up downstream decoder
-        FLUSH_FAIL           = 3, // Not enough space in the buffer
+        FLUSH_FAIL = 3, // Not enough space in the buffer
         INVALID_BLOCK_TYPE,
         INVALID_DYNAMIC_HT,
         INVALID_UNCOMPRESSED_BLOCK,
@@ -88,29 +94,27 @@ class DeflateParser
         INVALID_PARSE,
     };
 
-    static const char* block_result_to_cstr(block_result result)
-    {
-        static constexpr const char* block_result_strings[] = {
-          "SUCCESS",
-          "LAST_BLOCK",
-          "CAUGHT_UP_DOWNSTREAM",
-          "FLUSH_FAIL",
-          "INVALID_BLOCK_TYPE",
-          "INVALID_DYNAMIC_HT",
-          "INVALID_UNCOMPRESSED_BLOCK",
-          "INVALID_LITERAL",
-          "INVALID_MATCH",
-          "TOO_MUCH_INPUT",
-          "NOT_ENOUGH_INPUT",
-          "INVALID_PARSE",
+    static const char *block_result_to_cstr(block_result result) {
+        static constexpr const char *block_result_strings[] = {
+                "SUCCESS",
+                "LAST_BLOCK",
+                "CAUGHT_UP_DOWNSTREAM",
+                "FLUSH_FAIL",
+                "INVALID_BLOCK_TYPE",
+                "INVALID_DYNAMIC_HT",
+                "INVALID_UNCOMPRESSED_BLOCK",
+                "INVALID_LITERAL",
+                "INVALID_MATCH",
+                "TOO_MUCH_INPUT",
+                "NOT_ENOUGH_INPUT",
+                "INVALID_PARSE",
         };
         return block_result_strings[static_cast<unsigned>(result)];
     }
 
-  protected:
+protected:
     template<typename Window, typename Sink, typename Might = ShouldSucceed>
-    block_result do_block(Window& window, Sink& sink, const Might& might_tag = {})
-    {
+    block_result do_block(Window &window, Sink &sink, const Might &might_tag = {}) {
 
         /* Starting to read the next block.  */
         if (unlikely(!_in_stream.ensure_bits<1 + 2 + 5 + 5 + 4>())) return block_result::NOT_ENOUGH_INPUT;
@@ -119,7 +123,7 @@ class DeflateParser
         block_result success = _in_stream.pop_bits(1) ? block_result::LAST_BLOCK : block_result::SUCCESS;
 
         /* BTYPE: 2 bits  */
-        const libdeflate_decompressor* cur_d;
+        const libdeflate_decompressor *cur_d;
         switch (_in_stream.pop_bits<uint8_t>(2)) {
             case DEFLATE_BLOCKTYPE_DYNAMIC_HUFFMAN:
                 if (might_tag.fail_if(!prepare_dynamic(might_tag))) return block_result::INVALID_DYNAMIC_HT;
@@ -132,9 +136,12 @@ class DeflateParser
 
                 return success;
 
-            case DEFLATE_BLOCKTYPE_STATIC_HUFFMAN: cur_d = &static_decompressor; break;
+            case DEFLATE_BLOCKTYPE_STATIC_HUFFMAN:
+                cur_d = &static_decompressor;
+                break;
 
-            default: return block_result::INVALID_BLOCK_TYPE;
+            default:
+                return block_result::INVALID_BLOCK_TYPE;
         }
 
         /* The main DEFLATE decode loop  */
@@ -172,7 +179,8 @@ class DeflateParser
             /* Pop the extra length bits and add them to the length base to
              * produce the full length.  */
             const uint32_t length
-              = (entry >> HUFFDEC_LENGTH_BASE_SHIFT) + _in_stream.pop_bits(entry & HUFFDEC_EXTRA_LENGTH_BITS_MASK);
+                    =
+                    (entry >> HUFFDEC_LENGTH_BASE_SHIFT) + _in_stream.pop_bits(entry & HUFFDEC_EXTRA_LENGTH_BITS_MASK);
             assert(length <= 258);
 
             /* The match destination must not end after the end of the
@@ -207,7 +215,8 @@ class DeflateParser
             /* Pop the extra offset bits and add them to the offset base to
              * produce the full offset.  */
             const uint32_t offset
-              = (entry & HUFFDEC_OFFSET_BASE_MASK) + _in_stream.pop_bits(entry >> HUFFDEC_EXTRA_OFFSET_BITS_SHIFT);
+                    =
+                    (entry & HUFFDEC_OFFSET_BASE_MASK) + _in_stream.pop_bits(entry >> HUFFDEC_EXTRA_OFFSET_BITS_SHIFT);
 
             /* Copy the match: 'length' bytes at 'window_next - offset' to
              * 'window_next'.  */
@@ -215,17 +224,18 @@ class DeflateParser
         }
     }
 
-  private:
-    template<typename Might = ShouldSucceed> bool prepare_dynamic(const Might& might_tag = {})
-    {
+private:
+    template<typename Might = ShouldSucceed>
+    bool prepare_dynamic(const Might &might_tag = {}) {
 
         /* The order in which precode lengths are stored.  */
-        static constexpr uint8_t deflate_precode_lens_permutation[DEFLATE_NUM_PRECODE_SYMS]
-          = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
+        static constexpr uint8_t
+                deflate_precode_lens_permutation[DEFLATE_NUM_PRECODE_SYMS]
+                = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
 
         /* Read the codeword length counts.  */
-        unsigned       num_litlen_syms           = _in_stream.pop_bits<unsigned>(5) + 257;
-        unsigned       num_offset_syms           = _in_stream.pop_bits<unsigned>(5) + 1;
+        unsigned num_litlen_syms = _in_stream.pop_bits<unsigned>(5) + 257;
+        unsigned num_offset_syms = _in_stream.pop_bits<unsigned>(5) + 1;
         const unsigned num_explicit_precode_lens = _in_stream.pop_bits<unsigned>(4) + 4;
 
         /* Read the precode codeword lengths.  */
@@ -250,7 +260,7 @@ class DeflateParser
 
             /* Read the next precode symbol.  */
             const uint32_t entry
-              = _decompressor.u.l.precode_decode_table[_in_stream.bits<uint8_t>(DEFLATE_MAX_PRE_CODEWORD_LEN)];
+                    = _decompressor.u.l.precode_decode_table[_in_stream.bits<uint8_t>(DEFLATE_MAX_PRE_CODEWORD_LEN)];
             _in_stream.remove_bits(entry & HUFFDEC_LENGTH_MASK);
             const unsigned presym = entry >> HUFFDEC_RESULT_SHIFT;
 
@@ -284,8 +294,8 @@ class DeflateParser
                     PRINT_DEBUG_DECODING("fail at (i!=0)\n");
                     return false;
                 }
-                const uint8_t  rep_val        = _decompressor.u.l.lens[i - 1];
-                const unsigned rep_count      = 3 + _in_stream.pop_bits<unsigned>(2);
+                const uint8_t rep_val = _decompressor.u.l.lens[i - 1];
+                const unsigned rep_count = 3 + _in_stream.pop_bits<unsigned>(2);
                 _decompressor.u.l.lens[i + 0] = rep_val;
                 _decompressor.u.l.lens[i + 1] = rep_val;
                 _decompressor.u.l.lens[i + 2] = rep_val;
@@ -295,7 +305,7 @@ class DeflateParser
                 i += rep_count;
             } else if (presym == 17) {
                 /* Repeat zero 3 - 10 times  */
-                const unsigned rep_count      = 3 + _in_stream.pop_bits<unsigned>(3);
+                const unsigned rep_count = 3 + _in_stream.pop_bits<unsigned>(3);
                 _decompressor.u.l.lens[i + 0] = 0;
                 _decompressor.u.l.lens[i + 1] = 0;
                 _decompressor.u.l.lens[i + 2] = 0;
@@ -317,12 +327,12 @@ class DeflateParser
 
         if (!build_offset_decode_table(&_decompressor, num_litlen_syms, num_offset_syms, might_tag)) {
             PRINT_DEBUG_DECODING(
-              "fail at build_offset_decode_table(_decompressor, num_litlen_syms, num_offset_syms)\n");
+                    "fail at build_offset_decode_table(_decompressor, num_litlen_syms, num_offset_syms)\n");
             return false;
         }
         if (!build_litlen_decode_table(&_decompressor, num_litlen_syms, might_tag)) {
             PRINT_DEBUG_DECODING(
-              "fail at build_litlen_decode_table(_decompressor, num_litlen_syms, num_offset_syms)\n");
+                    "fail at build_litlen_decode_table(_decompressor, num_litlen_syms, num_offset_syms)\n");
             return false;
         }
 
@@ -330,8 +340,7 @@ class DeflateParser
     }
 
     template<typename OutWindow, typename Might = ShouldSucceed>
-    inline bool do_uncompressed(OutWindow& out, const Might& might_tag = {})
-    {
+    inline bool do_uncompressed(OutWindow &out, const Might &might_tag = {}) {
         /* Uncompressed block: copy 'len' bytes literally from the input
          * buffer to the output buffer.  */
         _in_stream.align_input();
@@ -341,7 +350,7 @@ class DeflateParser
             return false;
         }
 
-        uint16_t len  = _in_stream.pop_u16();
+        uint16_t len = _in_stream.pop_u16();
         uint16_t nlen = _in_stream.pop_u16();
 
         if (might_tag.fail_if(len != uint16_t(~nlen))) {
@@ -361,19 +370,18 @@ class DeflateParser
         return true;
     }
 
-  protected:
+protected:
     InputStream _in_stream;
 
-  private:
-    static inline struct libdeflate_decompressor make_static_decompressor()
-    {
+private:
+    static inline struct libdeflate_decompressor make_static_decompressor() {
         struct libdeflate_decompressor sd;
         prepare_static(&sd);
         return sd;
     }
 
     static const libdeflate_decompressor static_decompressor;
-    struct libdeflate_decompressor       _decompressor = {};
+    struct libdeflate_decompressor _decompressor = {};
 };
 
 const libdeflate_decompressor DeflateParser::static_decompressor = DeflateParser::make_static_decompressor();
@@ -381,131 +389,136 @@ const libdeflate_decompressor DeflateParser::static_decompressor = DeflateParser
 namespace details {
 
 /// Unrolled loops through template recurssion
-template<std::size_t N, typename F, typename R> struct repeat_t
-{
-    forceinline_fun static R call(F f)
-    {
-        R res = f();
-        if (!bool(res))
-            return res;
-        else
-            return repeat_t<N - 1, F, R>::call(f);
-    }
-};
+    template<std::size_t N, typename F, typename R>
+    struct repeat_t {
+        forceinline_fun static R
+        call(F
+             f) {
+            R res = f();
+            if (!bool(res))
+                return res;
+            else
+                return repeat_t<N - 1, F, R>::call(f);
+        }
+    };
 
-template<std::size_t N, typename F> struct repeat_t<N, F, void>
-{
-    forceinline_fun static void call(F f)
-    {
-        f();
-        repeat_t<N - 1, F, void>::call(f);
-    }
-};
+    template<std::size_t N, typename F>
+    struct repeat_t<N, F, void> {
+        forceinline_fun static void call(F f) {
+            f();
+            repeat_t<N - 1, F, void>::call(f);
+        }
+    };
 
-template<typename F, typename R> struct repeat_t<0, F, R>
-{
-    forceinline_fun static R call(F f) { return f(); }
-};
+    template<typename F, typename R>
+    struct repeat_t<0, F, R> {
+        forceinline_fun static R
+        call(F
+             f) { return f(); }
+    };
 
-template<typename F> struct repeat_t<0, F, void>
-{
-    forceinline_fun static void call(F f) { f(); }
-};
+    template<typename F>
+    struct repeat_t<0, F, void> {
+        forceinline_fun static void call(F f) { f(); }
+    };
 
 /// Repeats the operation N times or until the function returns false
-template<std::size_t N, typename FunctionType>
-forceinline_fun auto
-repeat(FunctionType function) -> decltype(function())
-{
-    static_assert(N > 0, "N must be non-zero");
-    return repeat_t<N - 1, FunctionType, decltype(function())>::call(function);
-}
+    template<std::size_t N, typename FunctionType>
+    forceinline_fun auto
+    repeat(FunctionType function)
 
-using vec_t                      = __m128i;
-static constexpr size_t vec_size = sizeof(vec_t);
+    ->
+
+    decltype(function()) {
+        static_assert(N > 0, "N must be non-zero");
+        return repeat_t<N - 1, FunctionType, decltype(function())>::call(function);
+    }
+
+    using vec_t = __m128i;
+    static constexpr size_t
+            vec_size = sizeof(vec_t);
 
 /// Copy size bytes of cache lines without loading the destination in caches
-static inline void*
-stream_memcpy(void* restrict _dst, const void* restrict _src, size_t size)
-{
-    static_assert(cache_line_size % vec_size == 0, "A integer number of stream_ty should fit in cache line");
+    static inline void *
+    stream_memcpy(void *restrict _dst, const void *restrict _src, size_t size) {
+        static_assert(cache_line_size % vec_size == 0, "A integer number of stream_ty should fit in cache line");
 
-    assert(reinterpret_cast<uintptr_t>(_dst) % cache_line_size == 0);
-    assert(reinterpret_cast<uintptr_t>(_src) % cache_line_size == 0);
-    assert(size % cache_line_size == 0);
+        assert(reinterpret_cast<uintptr_t>(_dst) % cache_line_size == 0);
+        assert(reinterpret_cast<uintptr_t>(_src) % cache_line_size == 0);
+        assert(size % cache_line_size == 0);
 
-    auto dst     = reinterpret_cast<vec_t*>(_dst);
-    auto src     = reinterpret_cast<const vec_t*>(_src);
-    auto dst_end = dst + size / vec_size;
+        auto dst = reinterpret_cast<vec_t *>(_dst);
+        auto src = reinterpret_cast<const vec_t *>(_src);
+        auto dst_end = dst + size / vec_size;
 
-    while (repeat<10>([&]() {
-        repeat<cache_line_size / vec_size>([&]() { _mm_stream_si128(dst++, _mm_load_si128(src++)); });
-        return dst < dst_end;
-    }))
-        ;
+        while (repeat<10>([&]() {
+            repeat<cache_line_size / vec_size>([&]() { _mm_stream_si128(dst++, _mm_load_si128(src++)); });
+            return dst < dst_end;
+        }));
 
-    return _dst;
-}
+        return _dst;
+    }
 
 /// Copy sizes bytes from _dst - offset to offset, if offset < size, bytes are repeated.
 /// Size is rounded up to the next multiple of vec_size (16 bytes currently)
-static inline void*
-overlap_memcpy(void* _dst, size_t offset, size_t size)
-{
-    static constexpr __v16qi suffle_arr[16] = {
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-      {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1},
-      {0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0},
-      {0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3},
-      {0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0},
-      {0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5, 0, 1, 2, 3},
-      {0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 0, 1},
-      {0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1, 2, 3, 4, 5, 6},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0, 1, 2},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0, 1},
-      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0},
-    };
+    static inline void *
+    overlap_memcpy(void *_dst, size_t offset, size_t size) {
+        static constexpr __v16qi
+                suffle_arr[16] = {
+                {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0},
+                {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0},
+                {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,  1,  0,  1,  0,  1},
+                {0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1,  2,  0,  1,  2,  0},
+                {0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2,  3,  0,  1,  2,  3},
+                {0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0,  1,  2,  3,  4,  0},
+                {0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4,  5,  0,  1,  2,  3},
+                {0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3,  4,  5,  6,  0,  1},
+                {0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2,  3,  4,  5,  6,  7},
+                {0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 1,  2,  3,  4,  5,  6},
+                {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0,  1,  2,  3,  4,  5},
+                {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0,  1,  2,  3,  4},
+                {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0,  1,  2,  3},
+                {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0,  1,  2},
+                {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0,  1},
+                {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 0},
+        };
 
-    static constexpr uint8_t delta[18] = {0, 0, 0, 2, 0, 4, 2, 5, 0, 2, 4, 6, 8, 10, 12, 14, 0, 1};
+        static constexpr uint8_t
+                delta[18] = {0, 0, 0, 2, 0, 4, 2, 5, 0, 2, 4, 6, 8, 10, 12, 14, 0, 1};
 
-    uint8_t*             dst     = static_cast<uint8_t*>(_dst);
-    const uint8_t* const dst_end = dst + size;
-    const uint8_t*       src     = dst - offset;
+        uint8_t *dst = static_cast<uint8_t *>(_dst);
+        const uint8_t *const dst_end = dst + size;
+        const uint8_t *src = dst - offset;
 
-    if (offset < vec_size) {
-        vec_t repeats;
-        memcpy(&repeats, src, vec_size);
-        repeats = _mm_shuffle_epi8(repeats, reinterpret_cast<vec_t>(suffle_arr[offset]));
-        memcpy(dst, &repeats, vec_size);
+        if (offset < vec_size) {
+            vec_t repeats;
+            memcpy(&repeats, src, vec_size);
+            repeats = _mm_shuffle_epi8(repeats, reinterpret_cast<vec_t>(suffle_arr[offset]));
+            memcpy(dst, &repeats, vec_size);
 
-        src = dst - delta[offset];
-        dst += vec_size;
-        if (dst >= dst_end) return _dst;
+            src = dst - delta[offset];
+            dst += vec_size;
+            if (dst >= dst_end) return _dst;
+        }
+
+        do {
+            memcpy(dst, src, vec_size);
+            dst += vec_size;
+            src += vec_size;
+        } while (dst < dst_end);
+
+        return _dst;
     }
-
-    do {
-        memcpy(dst, src, vec_size);
-        dst += vec_size;
-        src += vec_size;
-    } while (dst < dst_end);
-
-    return _dst;
-}
 
 }
 
 /** Context window for a deflate parse
- * Can be used with different symbols types, alllowing to handle symbolic backreferences
+ * Can be used with different symbols types, allowing to handle symbolic back-references
  * The window buffer is wrapped using virtual memory mapping
  */
-template<typename _char_t = char, unsigned _context_bits = 15> class Window
-{
-  public:
+template<typename _char_t = char, unsigned _context_bits = 15>
+class Window {
+public:
     // TODO: should we set these at runtime ? context_bits=15 should be fine for all compression levels
     // buffer_size could be adjusted on L3 cache size.
     // But: there is a runtime cost as we loose some optimizations
@@ -513,45 +526,55 @@ template<typename _char_t = char, unsigned _context_bits = 15> class Window
 
     using char_t = _char_t;
     // Ascii range accepted for literals
-    static constexpr char_t max_value = char_t('~'), min_value = char_t('\t');
+    static constexpr char_t
+            max_value = char_t('~'), min_value = char_t('\t');
 
-    using wsize_t  = uint_fast32_t; /// Type for positive offset in buffer
+    using wsize_t = uint_fast32_t; /// Type for positive offset in buffer
     using wssize_t = int_fast32_t;  /// Type for signed offsets in buffer
 
-    static constexpr wsize_t context_size = wsize_t(1) << context_bits;
+    static constexpr wsize_t
+            context_size = wsize_t(1) << context_bits;
     // We add one 4k page for the actual size of the buffer, allowing to copy more than requested
-    static constexpr wsize_t buffer_size = context_size + ::details::page_size / sizeof(char_t);
+    static constexpr wsize_t
+            buffer_size = context_size + ::details::page_size / sizeof(char_t);
 
-    static constexpr wsize_t batch_copymatch_size = details::vec_size / sizeof(char_t);
-    static_assert(details::vec_size % sizeof(char_t) == 0, "Fractional number of symbols in copy match batches");
+    static constexpr wsize_t
+            batch_copymatch_size = details::vec_size / sizeof(char_t);
+    static_assert(details::vec_size
+                  % sizeof(char_t) == 0, "Fractional number of symbols in copy match batches");
 
-    Window(Window&&) noexcept = default;
-    Window& operator=(Window&&) noexcept = default;
-    Window(const Window&)                = delete;
-    Window& operator=(const Window&) noexcept = delete;
+    Window(Window &&)
 
-    Window(const char* shm_name = nullptr)
-      : _buffer(alloc_mirrored<char_t>(buffer_size, 3, shm_name))
-      , next(_buffer.end() - buffer_size)
-      , waterline(_buffer.end() - batch_copymatch_size)
-      , _last_flush_end(next)
-    {}
+    noexcept =
+    default;
 
-    void clear()
-    {
-        next            = _buffer.end() - buffer_size;
+    Window &operator=(Window &&)
+
+    noexcept =
+    default;
+
+    Window(const Window &) = delete;
+
+    Window &operator=(const Window &)
+
+    noexcept = delete;
+
+    Window(const char *shm_name = nullptr)
+            : _buffer(alloc_mirrored<char_t>(buffer_size, 3, shm_name)), next(_buffer.end() - buffer_size),
+              waterline(_buffer.end() - batch_copymatch_size), _last_flush_end(next) {}
+
+    void clear() {
+        next = _buffer.end() - buffer_size;
         _last_flush_end = next;
-        waterline       = _buffer.end() - batch_copymatch_size;
+        waterline = _buffer.end() - batch_copymatch_size;
     }
 
-    wsize_t available() const
-    {
+    wsize_t available() const {
         assert(next <= waterline);
         return wsize_t(waterline - next);
     }
 
-    bool push(char_t c)
-    {
+    bool push(char_t c) {
         if (unlikely(char_t(c) > max_value || char_t(c) < min_value)) {
             PRINT_DEBUG("fail, unprintable literal unexpected in fastq\n");
             return false;
@@ -563,10 +586,9 @@ template<typename _char_t = char, unsigned _context_bits = 15> class Window
     }
 
     /* return true if it's a reasonable offset, otherwise false */
-    bool copy_match(wsize_t length, wsize_t offset)
-    {
+    bool copy_match(wsize_t length, wsize_t offset) {
         if (unlikely(offset > context_size)) {
-            PRINT_DEBUG("fail, copy_match, offset %d\n", (int)offset);
+            PRINT_DEBUG("fail, copy_match, offset %d\n", (int) offset);
             return false;
         }
 
@@ -577,7 +599,7 @@ template<typename _char_t = char, unsigned _context_bits = 15> class Window
         assert(offset <= context_size);
         assert(available() >= length);
 
-        char_t* dst = next;
+        char_t *dst = next;
         next += length;
         assert(_buffer.includes(dst, dst + details::round_up<batch_copymatch_size>(length)));
         assert(_buffer.includes(dst - offset));
@@ -587,8 +609,7 @@ template<typename _char_t = char, unsigned _context_bits = 15> class Window
         return true;
     }
 
-    bool copy(InputStream& in, wsize_t length)
-    {
+    bool copy(InputStream &in, wsize_t length) {
         if (unlikely(!in.check_ascii(length, min_value, max_value))) {
             PRINT_DEBUG("fail, unprintable uncompressed block unexpected in fastq\n");
             return false;
@@ -599,8 +620,7 @@ template<typename _char_t = char, unsigned _context_bits = 15> class Window
         return true;
     }
 
-    span<char_t> flushable()
-    {
+    span<char_t> flushable() {
         span<char_t> flushing = {_last_flush_end, next};
         assert(_buffer.includes(flushing));
         assert(flushing.size() <= buffer_size - batch_copymatch_size);
@@ -608,13 +628,13 @@ template<typename _char_t = char, unsigned _context_bits = 15> class Window
     }
 
     /// Move the 32K context to the start of the buffer
-    template<typename Sink> size_t flush(Sink& sink)
-    {
+    template<typename Sink>
+    size_t flush(Sink &sink) {
         // Waterline is just a cache of this value
         assert(waterline == _last_flush_end + (buffer_size - batch_copymatch_size));
 
         span<char_t> flushing = flushable();
-        size_t       sz       = sink(flushing);
+        size_t sz = sink(flushing);
         assert(sz <= flushing.size());
         _last_flush_end += sz;
         assert(flushing.bounds(_last_flush_end));
@@ -633,28 +653,30 @@ template<typename _char_t = char, unsigned _context_bits = 15> class Window
     }
 
     span<const char_t> current_context() const { return {next - context_size, next}; }
-    span<char_t>       current_context() { return {next - context_size, next}; }
 
-  protected:
+    span<char_t> current_context() { return {next - context_size, next}; }
+
+protected:
     mmap_span<char_t> _buffer; // A buffer_size buffer mapped 3 time contiguously
-    char_t*           next;
-    const char_t*     waterline;
-    char_t*           _last_flush_end;
+    char_t *next;
+    const char_t *waterline;
+    char_t *_last_flush_end;
 };
 
 /** A do nothing window for checking the validity of the stream while searching for a block during random access.
  */
-struct DummyWindow
-{
+struct DummyWindow {
     static constexpr unsigned context_bits = 15;
 
-    using char_t                      = uint8_t;
-    static constexpr char_t max_value = char_t('~'), min_value = char_t('\t');
+    using char_t = uint8_t;
+    static constexpr char_t
+            max_value = char_t('~'), min_value = char_t('\t');
 
-    using wsize_t  = uint_fast32_t; /// Type for positive offset in buffer
+    using wsize_t = uint_fast32_t; /// Type for positive offset in buffer
     using wssize_t = int_fast32_t;  /// Type for signed offsets in buffer
 
-    static constexpr wsize_t context_size = wsize_t(1) << context_bits;
+    static constexpr wsize_t
+            context_size = wsize_t(1) << context_bits;
 
     void clear() { _size = 0; }
 
@@ -662,8 +684,7 @@ struct DummyWindow
 
     wsize_t available() const { return context_size; }
 
-    bool push(char_t c)
-    {
+    bool push(char_t c) {
         _size++;
         if (c <= max_value && c >= min_value) {
             return true;
@@ -674,8 +695,7 @@ struct DummyWindow
     }
 
     /* return true if it's a reasonable offset, otherwise false */
-    bool copy_match(wsize_t length, wsize_t offset)
-    {
+    bool copy_match(wsize_t length, wsize_t offset) {
         assert(length >= 3);
         assert(length <= 258);
         assert(offset != 0);
@@ -688,8 +708,7 @@ struct DummyWindow
         }
     }
 
-    bool copy(InputStream& in, wsize_t length)
-    {
+    bool copy(InputStream &in, wsize_t length) {
         _size += length;
         if (in.check_ascii(length, min_value, max_value)) {
             return true;
@@ -700,34 +719,34 @@ struct DummyWindow
     }
 
     /// Move the 32K context to the start of the buffer
-    size_t flush(DummyWindow&) { return context_size; }
+    size_t flush(DummyWindow &) { return context_size; }
 
-    bool notify_end_block(InputStream&) const { return true; }
+    bool notify_end_block(InputStream &) const { return true; }
 
-  protected:
+protected:
     size_t _size = 0;
 };
 
 /** Window that flush its content to a buffer
  * Cache lines are flushed with streaming non-temporal store using the write combining buffer
  */
-template<typename char_t> class SinkBuffer : public span<char_t>
-{
-  private:
-    static constexpr size_t cache_line_size = details::cache_line_size;
-    static_assert(cache_line_size % sizeof(char_t) == 0, "A integer number of char_t should fits in cache line");
+template<typename char_t>
+class SinkBuffer : public span<char_t> {
+private:
+    static constexpr size_t
+            cache_line_size = details::cache_line_size;
+    static_assert(cache_line_size
+                  % sizeof(char_t) == 0, "A integer number of char_t should fits in cache line");
 
-  public:
+public:
     SinkBuffer(span<char_t> buf)
-      : span<char_t>(buf)
-    {}
+            : span<char_t>(buf) {}
 
-    size_t operator()(span<char_t> data)
-    {
+    size_t operator()(span<char_t> data) {
         const size_t sz = size_t(::details::round_down<cache_line_size>(data.end()) - data.begin());
         if (unlikely(sz > this->size())) return 0;
 
-        char_t* dst = this->begin();
+        char_t *dst = this->begin();
         this->pop_front(sz);
 
         details::stream_memcpy(dst, data.begin(), sz * sizeof(char_t));
@@ -736,10 +755,9 @@ template<typename char_t> class SinkBuffer : public span<char_t>
 
     /// Copy the remaining data at the end of decompression, returns the remaining buffer space aligned to the next
     /// cache line
-    span<char_t> final_flush(Window<char_t>& window)
-    { // We're leaving together
+    span<char_t> final_flush(Window<char_t> &window) { // We're leaving together
         span<char_t> last_flush = window.flushable();
-        size_t       sz         = last_flush.size();
+        size_t sz = last_flush.size();
         if (unlikely(sz > this->size())) return {}; // Not enough space
 
         memcpy(this->begin(), last_flush.begin(), sz * sizeof(char_t));
@@ -749,87 +767,90 @@ template<typename char_t> class SinkBuffer : public span<char_t>
     }
 
     // Return a pointer after the last written symbol in the buffer
-    char_t* buf_ptr() const { return this->begin(); }
+    char_t *buf_ptr() const { return this->begin(); }
 };
 
 // Virtual base class for pugz consumers
-class ConsumerInterface
-{
-  public:
-    void set_chunk_idx(unsigned chunk_idx, bool is_last = false)
-    {
-        _chunk_idx  = chunk_idx;
+class ConsumerInterface {
+public:
+    void set_chunk_idx(unsigned chunk_idx, bool is_last = false) {
+        _chunk_idx = chunk_idx;
         _last_chunk = is_last;
     }
+
     void set_section_idx(unsigned section_idx) { _section_idx = section_idx; }
 
     unsigned chunk_idx() const { return _chunk_idx; }
-    unsigned section_idx() const { return _section_idx; }
-    bool     is_last_chunk() const { return _last_chunk; }
 
-    size_t operator()(span<const uint8_t> data)
-    {
+    unsigned section_idx() const { return _section_idx; }
+
+    bool is_last_chunk() const { return _last_chunk; }
+
+    size_t operator()(span<const uint8_t> data) {
         flush(data, false);
         return data.size();
     }
 
     // Flushes the already resolved context in ~32KB step, last indicates if this is the last of the chunk
     virtual void flush(span<const uint8_t> data, bool last) = 0;
-    virtual void flush(span<uint16_t>      data16bits,
+
+    virtual void flush(span<uint16_t> data16bits,
                        span<const uint8_t> lkt16bits,
-                       span<uint8_t>       data8bits,
+                       span<uint8_t> data8bits,
                        span<const uint8_t> lkt8bits)
-      = 0;
+    = 0;
 
     virtual ~ConsumerInterface() {}
 
-  private:
-    unsigned _chunk_idx   = 0;
+private:
+    unsigned _chunk_idx = 0;
     unsigned _section_idx = 0;
-    bool     _last_chunk  = false;
+    bool _last_chunk = false;
 };
 
 /** Compresses the 16bits back-references symbols into 8bits using a lookup-table
  */
-template<typename NarrowWindow = Window<uint8_t>, typename WideWindow = Window<uint16_t>> struct BackrefMultiplexer
-{
+template<typename NarrowWindow = Window<uint8_t>, typename WideWindow = Window<uint16_t>>
+struct BackrefMultiplexer {
 
     using narrow_t = typename NarrowWindow::char_t;
-    using wide_t   = typename WideWindow::char_t;
+    using wide_t = typename WideWindow::char_t;
 
-    static constexpr narrow_t first_backref_symbol    = NarrowWindow::max_value + 1;
-    static constexpr narrow_t last_backref_symbol     = std::numeric_limits<narrow_t>::max();
+    static constexpr narrow_t
+            first_backref_symbol = NarrowWindow::max_value + 1;
+    static constexpr narrow_t
+            last_backref_symbol = std::numeric_limits<narrow_t>::max();
     static constexpr unsigned total_available_symbols = unsigned(last_backref_symbol) + 1;
-    static constexpr size_t   context_size            = WideWindow::context_size;
+    static constexpr size_t
+            context_size = WideWindow::context_size;
 
-    static_assert(WideWindow::context_size == context_size, "Both window should have the same context size");
+    static_assert(WideWindow::context_size
+                  == context_size, "Both window should have the same context size");
 
     BackrefMultiplexer()
-      : lkt8to16bits(make_unique_span<wide_t>(total_available_symbols))
-      , lkt16bits2chr(make_unique_span<narrow_t>(first_backref_symbol + context_size))
-      , lkt8bits2chr(make_unique_span<narrow_t>(total_available_symbols))
-    {
+            : lkt8to16bits(make_unique_span<wide_t>(total_available_symbols)),
+              lkt16bits2chr(make_unique_span<narrow_t>(first_backref_symbol + context_size)),
+              lkt8bits2chr(make_unique_span<narrow_t>(total_available_symbols)) {
         for (narrow_t i = 0; i < first_backref_symbol; i++) {
             lkt8to16bits[i] = 0;
         }
         // Prepare the linear part of lookup table
         for (unsigned i = 0; i < first_backref_symbol; i++) {
             lkt16bits2chr[i] = narrow_t(i);
-            lkt8bits2chr[i]  = narrow_t(i);
+            lkt8bits2chr[i] = narrow_t(i);
         }
     }
 
     /* Given an input_context with backref encoded as max_value+1+offset on 16bits, try to write
      * a 8bits context in output_context with backref encoded in [max_value+1, 255] through a lookup table
      */
-    bool compress_backref_symbols(const WideWindow& input_context, NarrowWindow& output_context)
-    {
+    bool compress_backref_symbols(const WideWindow &input_context, NarrowWindow &output_context) {
         assert(lkt8to16bits);
 
         narrow_t next_symbol = first_backref_symbol;
 
-        narrow_t* output_p = output_context.current_context().begin();
-        for (wide_t c_from : input_context.current_context()) {
+        narrow_t *output_p = output_context.current_context().begin();
+        for (wide_t c_from: input_context.current_context()) {
             narrow_t c_to;
             if (c_from < first_backref_symbol) {
                 c_to = narrow_t(c_from);                        // An in range (resolved) character
@@ -850,7 +871,7 @@ template<typename NarrowWindow = Window<uint8_t>, typename WideWindow = Window<u
                         is_compressed = false;
                         return false;
                     }
-                    c_to                        = narrow_t(next_symbol);
+                    c_to = narrow_t(next_symbol);
                     lkt8to16bits[next_symbol++] = c_from;
                 }
                 assert(c_to >= first_backref_symbol);
@@ -860,8 +881,8 @@ template<typename NarrowWindow = Window<uint8_t>, typename WideWindow = Window<u
         assert(output_p == output_context.current_context().end());
 
 #ifndef NDEBUG // Checks compression
-        auto* pcomp = output_context.current_context().begin();
-        for (wide_t cin : input_context.current_context()) {
+        auto *pcomp = output_context.current_context().begin();
+        for (wide_t cin: input_context.current_context()) {
             assert(next_symbol == 0 || *pcomp < next_symbol);
             if (*pcomp < first_backref_symbol) {
                 assert(*pcomp == cin);
@@ -879,12 +900,11 @@ template<typename NarrowWindow = Window<uint8_t>, typename WideWindow = Window<u
     /** Given a context (ie. a lkt: offset -> char) and the compression lkt (8bits code -> offset 16bit) computed by
      * compress_backref_symbols, returns a lkt: 8bits code -> char
      */
-    void compose_context(span<const narrow_t> context)
-    {
+    void compose_context(span<const narrow_t> context) {
         assert(context.size() == context_size);
 
         // Copy the context for the 16bits translation lkt
-        narrow_t* lkt16bits2chr_p = &lkt16bits2chr[first_backref_symbol];
+        narrow_t *lkt16bits2chr_p = &lkt16bits2chr[first_backref_symbol];
         assert(lkt16bits2chr.end() - lkt16bits2chr_p == context_size);
         memcpy(&lkt16bits2chr[first_backref_symbol], context.begin(), context_size * sizeof(narrow_t));
 
@@ -900,35 +920,31 @@ template<typename NarrowWindow = Window<uint8_t>, typename WideWindow = Window<u
         }
     }
 
-    unique_span<wide_t>   lkt8to16bits;  // 8bits code -> offset 16bit
+    unique_span<wide_t> lkt8to16bits;  // 8bits code -> offset 16bit
     unique_span<narrow_t> lkt16bits2chr; // 16bits code -> 8bit char = [\0, '~'] + context
     unique_span<narrow_t> lkt8bits2chr;  // 8bits code -> 8bit char = [\0, '~'] + context[lkt8to16bits]
-    bool                  is_compressed = false;
+    bool is_compressed = false;
 };
 
-class gzip_error : public std::runtime_error
-{
-  public:
+class gzip_error : public std::runtime_error {
+public:
     using std::runtime_error::runtime_error;
+
     gzip_error(DeflateParser::block_result res)
-      : runtime_error(DeflateParser::block_result_to_cstr(res))
-    {}
+            : runtime_error(DeflateParser::block_result_to_cstr(res)) {}
 };
 
 /// Monomorphic base for passing information accross threads
-class DeflateThread : public DeflateParser
-{
-  public:
-    static constexpr size_t unset_stop_pos = ~0UL;
+class DeflateThread : public DeflateParser {
+public:
+    static constexpr size_t
+            unset_stop_pos = ~0UL;
 
-    DeflateThread(const InputStream& input_stream, ConsumerInterface& consumer)
-      : DeflateParser(input_stream)
-      , _consumer(consumer)
-    {}
+    DeflateThread(const InputStream &input_stream, ConsumerInterface &consumer)
+            : DeflateParser(input_stream), _consumer(consumer) {}
 
     // Return the context and the position of the next block in the stream
-    std::pair<locked_span<uint8_t>, size_t> get_context()
-    {
+    std::pair<locked_span<uint8_t>, size_t> get_context() {
         auto lock = std::unique_lock<std::mutex>(_mut);
         while (_state == state_t::RUNNING)
             _cond.wait(lock);
@@ -939,7 +955,7 @@ class DeflateThread : public DeflateParser
             // Signal that the context is used: the thread will be resumed once we release the lock
             _state = state_t::RUNNING;
             _cond.notify_all();
-            PRINT_DEBUG("%p give context for block %lu\n", (void*)this, _stoped_at);
+            PRINT_DEBUG("%d give context for block %lu\n", threadNum, _stoped_at);
             return {locked_span<uint8_t>{context, std::move(lock)}, _stoped_at};
         } else {
             assert(_state == state_t::FAIL);
@@ -948,28 +964,39 @@ class DeflateThread : public DeflateParser
     }
 
     /// Set the position of the first synced block upstream, so that this thread stops before this block */
-    void set_end_block(size_t synced_pos)
-    {
-        PRINT_DEBUG("%p set to stop after %lu\n", (void*)this, synced_pos);
+    void set_end_block(size_t synced_pos) {
+        PRINT_DEBUG("%d set to stop after %lu\n", threadNum, synced_pos);
         _stop_after.store(synced_pos, std::memory_order_release);
     }
 
-    void set_initial_context(span<uint8_t> context = {})
-    {
+    void set_initial_context(span<uint8_t> context = {}) {
         wait_for_context_borrow();
         _window.clear();
         if (context) { memcpy(_window.current_context().begin(), context.begin(), _window.current_context().size()); }
     }
-
+    void set_downstream(DeflateThread *down_stream) {
+        //PRINT_DEBUG("%d dd %d\n", threadNum, down_stream->threadNum);
+        _down_stream = down_stream;
+    }
     // Decompress classically (typically used at position 0) until a certain position
-    void go(size_t position_bits = 0)
-    {
+    void go(size_t position_bits = 0) {
+        //! ylf fix1
+        //! perhaps the real block end haven't calculate by down_stream
+        //! wait its down_stream finish sync()
+        syncDone = 1;
+        if (!_consumer.is_last_chunk()) {
+            PRINT_DEBUG("%d down is %d\n", threadNum, _down_stream->threadNum);
+            while (!_down_stream->syncDone) {
+                usleep(100);
+            }
+        }
         wait_for_context_borrow();
 
         _in_stream.set_position_bits(position_bits);
 
         _window.clear();
         auto res = this->decompress_loop(_window, _consumer, []() { return false; });
+        PRINT_DEBUG("%d de loop\n", threadNum);
 
         if (res > block_result::CAUGHT_UP_DOWNSTREAM) { throw_gzip_error(res); }
 
@@ -977,35 +1004,32 @@ class DeflateThread : public DeflateParser
         _consumer.flush(_window.flushable(), true);
     }
 
-    ~DeflateThread()
-    {
+    ~DeflateThread() {
         wait_for_context_borrow(); // Someone might be reading from our windows, so wait before freeing it.
         PRINT_DEBUG("~DeflateThread()");
     }
 
-  protected:
-    void wait_for_context_borrow()
-    {
-        auto lock         = std::unique_lock<std::mutex>(_mut);
+protected:
+    void wait_for_context_borrow() {
+        auto lock = std::unique_lock<std::mutex>(_mut);
         bool was_borrowed = _state == state_t::BORROWED_CONTEXT;
         while (_state == state_t::BORROWED_CONTEXT)
             _cond.wait(lock);
 
-        if (was_borrowed) PRINT_DEBUG("%p get context borrow back\n", (void*)this);
+        if (was_borrowed) PRINT_DEBUG("%d get context borrow back\n", threadNum);
     }
 
     // Post context and wait for it to be consumed
-    void set_context(span<uint8_t> ctx)
-    {
+    void set_context(span<uint8_t> ctx) {
 #ifndef NDEBUG
-        PRINT_DEBUG("%p set context\n", (void*)this);
-        for (uint8_t c : ctx) {
+        PRINT_DEBUG("%d set context\n", threadNum);
+        for (uint8_t c: ctx) {
             assert(c >= Window<uint8_t>::min_value && c <= Window<uint8_t>::max_value);
         }
 #endif
 
-        auto lock  = std::unique_lock<std::mutex>(_mut);
-        _context   = ctx;
+        auto lock = std::unique_lock<std::mutex>(_mut);
+        _context = ctx;
         _stoped_at = _in_stream.position_bits();
         assert(_state == state_t::RUNNING);
         _state = state_t::BORROWED_CONTEXT;
@@ -1013,9 +1037,8 @@ class DeflateThread : public DeflateParser
     }
 
     // Enter failed state
-    void fail()
-    {
-        PRINT_DEBUG("%p failed\n", (void*)this);
+    void fail() {
+        PRINT_DEBUG("%d failed\n", threadNum);
         auto lock = std::unique_lock<std::mutex>(_mut);
         while (_state == state_t::BORROWED_CONTEXT)
             _cond.wait(lock);
@@ -1024,28 +1047,36 @@ class DeflateThread : public DeflateParser
         _cond.notify_all();
     }
 
-    template<typename T> void throw_gzip_error(T msg)
-    {
+    template<typename T>
+    void throw_gzip_error(T msg) {
         fail();
         throw gzip_error(msg);
     }
 
-    size_t get_stop_pos() const { return _stop_after.load(std::memory_order_acquire); }
+    size_t get_stop_pos() const {
+        //! maybe not thread safe?
+        //PRINT_DEBUG("%p get stop after %lu\n", (void *) this, _stop_after.load(std::memory_order_acquire));
+        return _stop_after.load(std::memory_order_acquire);
+    }
 
     template<typename Window, typename Sink, typename Predicate>
-    flatten_fun block_result decompress_loop(Window& window, Sink& sink, Predicate&& predicate)
-    {
+    flatten_fun block_result
+    decompress_loop(Window
+                    &window,
+                    Sink &sink, Predicate
+                    &&predicate) {
         for (;;) {
+            //! which means successfully decode block9,11,13...
             if (unlikely(predicate())) return block_result::SUCCESS;
             size_t target_stop = get_stop_pos();
             if (unlikely(_in_stream.position_bits() >= target_stop)) {
                 if (_in_stream.position_bits() != target_stop) {
-                    PRINT_DEBUG("%p stoped at %lu, %li bits after expected\n",
-                                (void*)this,
+                    PRINT_DEBUG("%d stoped at %lu, %li bits after expected\n",
+                                threadNum,
                                 _in_stream.position_bits(),
                                 _in_stream.position_bits() - target_stop);
                 } else {
-                    PRINT_DEBUG("%p stoped at %lu\n", (void*)this, _in_stream.position_bits());
+                    PRINT_DEBUG("%d stoped at %lu\n", threadNum, _in_stream.position_bits());
                 }
                 _stop_after.store(unset_stop_pos, std::memory_order_relaxed);
                 return block_result::CAUGHT_UP_DOWNSTREAM;
@@ -1055,59 +1086,67 @@ class DeflateThread : public DeflateParser
         }
     }
 
-  protected:
-    Window<uint8_t>    _window = {};
-    ConsumerInterface& _consumer;
+protected:
+    Window<uint8_t> _window = {};
+    ConsumerInterface &_consumer;
 
-  private:
+private:
     /* Members for synchronization and communication */
-    std::mutex              _mut{};
+    std::mutex _mut{};
     std::condition_variable _cond{};
-    std::atomic<size_t>     _stop_after = {unset_stop_pos}; // Where we should stop
-    size_t                  _stoped_at  = unset_stop_pos;   // Where we stopped
-    span<uint8_t>           _context    = {};
-    enum class state_t { RUNNING, BORROWED_CONTEXT, FAIL };
+    std::atomic<size_t> _stop_after = {unset_stop_pos}; // Where we should stop
+    size_t _stoped_at = unset_stop_pos;   // Where we stopped
+    span<uint8_t> _context = {};
+    enum class state_t {
+        RUNNING, BORROWED_CONTEXT, FAIL
+    };
     state_t _state = state_t::RUNNING;
+public:
+    std::atomic<bool> syncDone = {0};
+    int threadNum;
+    DeflateThread *_down_stream = nullptr;
+
 };
 
-constexpr size_t DeflateThread::unset_stop_pos;
+constexpr size_t
+        DeflateThread::unset_stop_pos;
 
-class DeflateThreadRandomAccess : public DeflateThread
-{
+class DeflateThreadRandomAccess : public DeflateThread {
 
-  public:
-    static constexpr size_t buffer_virtual_size = 512ull << 20;
+public:
+    static constexpr size_t
+            buffer_virtual_size = 512ull << 20;
 
-    DeflateThreadRandomAccess(const InputStream& input_stream, ConsumerInterface& consumer)
-      : DeflateThread(input_stream, consumer)
-      , buffer(alloc_huge<uint8_t>(buffer_virtual_size))
-    {}
+    DeflateThreadRandomAccess(const InputStream &input_stream, ConsumerInterface &consumer)
+            : DeflateThread(input_stream, consumer), buffer(alloc_huge<uint8_t>(buffer_virtual_size)) {}
 
-    DeflateThreadRandomAccess(const DeflateThreadRandomAccess&) = delete;
-    DeflateThreadRandomAccess& operator=(const DeflateThreadRandomAccess&) = delete;
+    DeflateThreadRandomAccess(const DeflateThreadRandomAccess &) = delete;
 
-    ~DeflateThreadRandomAccess()
-    {
+    DeflateThreadRandomAccess &operator=(const DeflateThreadRandomAccess &) = delete;
+
+    ~DeflateThreadRandomAccess() {
         wait_for_context_borrow();
         PRINT_DEBUG("~DeflateThreadRandomAccess\n");
     }
 
-    void set_upstream(DeflateThread* up_stream) { _up_stream = up_stream; }
+    void set_upstream(DeflateThread *up_stream) { _up_stream = up_stream; }
+
+
 
     // Finds a new block of decompressed size >= min_block_size bits
     // between positions [skip, skip+max_bits_skip] in the compressed stream
-    size_t sync(size_t       skip,
-                const size_t max_bits_skip  = size_t(1) << (3 + 20), // 1MiB
+    size_t sync(size_t skip,
+                const size_t max_bits_skip = size_t(1) << (3 + 20), // 1MiB
                 const size_t min_block_size = 1 << 13                // 8KiB
-    )
-    {
+    ) {
         _in_stream.set_position_bits(skip);
 
         DummyWindow dummy_win;
 
-        size_t       pos     = skip;
+        size_t pos = skip;
         const size_t max_pos = pos + std::min(8 * _in_stream.size(), max_bits_skip);
 
+        //! try every pos until do_block return SUCCESS
         for (_in_stream.ensure_bits<1>(); pos < max_pos; pos++) {
             assert(pos == _in_stream.position_bits());
 
@@ -1121,8 +1160,9 @@ class DeflateThreadRandomAccess : public DeflateThread
 
             block_result res = do_block(dummy_win, dummy_win, ShouldFail{});
 
+            //!get a valid pos, then set start of this stream and end of pre stream
             if (unlikely(res == block_result::SUCCESS && dummy_win.size() >= min_block_size)) {
-                PRINT_DEBUG("%p Candidate block start at %lubits\n", (void*)this, pos);
+                PRINT_DEBUG("%d Candidate block start at %lubits\n", threadNum, pos);
                 _in_stream.set_position_bits(pos);
                 _up_stream->set_end_block(pos); // This is not even needed !
                 return pos;
@@ -1136,16 +1176,58 @@ class DeflateThreadRandomAccess : public DeflateThread
 
     // Decompress a chunk starting at position "skipbits" (in bits) in the compressed stream
     // will guess (by calling sync()) the position of the next block
-    bool go(size_t skipbits)
-    {
+    //! the main process function
+    //! skipbits is the block start we divided in main()
+    bool go(size_t skipbits) {
+//        size_t init_stop_pos = get_stop_pos();
+//        PRINT_DEBUG("%p init_stop_pos is %lu\n", (void *) this, init_stop_pos);
+
         assert(_up_stream != nullptr);
 
+
+        //! find a real block start
+        //! at the same time pass this start to pre stream, as its end
+
+
         size_t sync_bitpos = sync(skipbits);
+        //PRINT_DEBUG("%p sync done\n", (void *) this);
+        PRINT_DEBUG("%d sync done\n", threadNum);
+        //! ylf fix2
+        //! perhaps the real block end haven't calculate by down_stream
+        //! wait its down_stream finish sync()
+        syncDone = 1;
+        if (!_consumer.is_last_chunk()) {
+            //PRINT_DEBUG("%p down is %p\n", (void *) this, _down_stream);
+            while (!_down_stream->syncDone) {
+                usleep(100);
+            }
+        }
+//        std::unique_lock<std::mutex> lock{ready_mtx_test};
+//        nready_test++;
+//        std::cout << "nready_test " << nready_test << std::endl;
+//        std::cout << "tar_done " << tar_done << std::endl;
+//
+//        ready_test.notify_all();
+//        while (nready_test % tar_done != 0)
+//            ready_test.wait(lock);
+//        PRINT_DEBUG("%p init done %d %d\n", (void *) this, nready_test.load(std::memory_order_acquire), tar_done);
 
         // Get the bit position where the chunk stops. Previously it came from the thread handling the upstream chunk,
         // now it is set up deterministically from go()'s caller.
         // FIXME: With the new setup, this could be combined with the previous check and checked in sync()
         size_t stop_bitpos = get_stop_pos();
+//        PRINT_DEBUG("%p 11111 now stop_bitpos is %lu\n", (void *) this, stop_bitpos);
+//        bool is_last = _consumer.is_last_chunk();
+//        while (!is_last && stop_bitpos == init_stop_pos) {
+//            usleep(100);
+//            stop_bitpos = get_stop_pos();
+//        }
+//        PRINT_DEBUG("%p 22222 now stop_bitpos is %lu\n", (void *) this, stop_bitpos);
+
+//        if (stop_bitpos == unset_stop_pos) {
+//            printf("GGGGG\n");
+//            throw_gzip_error("stop_bitpos == unset_stop_pos");
+//        }
         if (stop_bitpos != unset_stop_pos && sync_bitpos >= stop_bitpos) {
             // FIXME: We found our first block after where we are supposed to stop; Could be due to the
             // file being multi-part (hence not yet supported by pugz)
@@ -1153,17 +1235,19 @@ class DeflateThreadRandomAccess : public DeflateThread
         }
 
         // Prepare the wide_window
-        span<uint16_t>       wide_buffer = buffer.reinterpret<uint16_t>();
-        SinkBuffer<uint16_t> wide_sink   = wide_buffer;
+        span<uint16_t> wide_buffer = buffer.reinterpret<uint16_t>();
+        SinkBuffer<uint16_t> wide_sink = wide_buffer;
         wide_window.clear();
         uint16_t sym = wide_window.max_value + 1;
-        for (auto& c : wide_window.current_context())
+        //! memset the window with '?'(for instance)
+        for (auto &c: wide_window.current_context())
             c = sym++;
 
         // Decompress to 16bits buffer until there is a small enough number of back-references
+        //! this part is not very sure?
         multiplexer.is_compressed = false;
-        size_t block_count        = 0;
-        auto   res                = decompress_loop(wide_window, wide_sink, [&]() {
+        size_t block_count = 0;
+        auto res = decompress_loop(wide_window, wide_sink, [&]() {
             block_count++;
             if (block_count <= 8 || block_count % 2 == 0) return false;
 
@@ -1174,12 +1258,14 @@ class DeflateThreadRandomAccess : public DeflateThread
 
         // Seal the 16bit buffer, and get the remaining for the 8bit part
         span<uint8_t> narrow_buffer = wide_sink.final_flush(wide_window).reinterpret<uint8_t>();
-        wide_buffer                 = {wide_buffer.begin(), wide_sink.begin()};
+        wide_buffer = {wide_buffer.begin(), wide_sink.begin()};
 
         if (res == block_result::SUCCESS) {
+            PRINT_DEBUG("%d decompress loop return SUCCESS\n", threadNum);
+
             // Decompress to the 8bit buffer
             SinkBuffer<uint8_t> narrow_sink = narrow_buffer;
-            res                             = this->decompress_loop(_window, narrow_sink, []() { return false; });
+            res = this->decompress_loop(_window, narrow_sink, []() { return false; });
 
             if (res == block_result::CAUGHT_UP_DOWNSTREAM || res == block_result::LAST_BLOCK) {
                 // Seal the narrow buffer
@@ -1187,10 +1273,11 @@ class DeflateThreadRandomAccess : public DeflateThread
                 narrow_buffer = {narrow_buffer.begin(), narrow_sink.begin()};
 
                 // Get the context and prepare lookup table
+                //! lock is here!
                 if (!prepare_lookup_table(sync_bitpos)) return false;
 
                 // Translate the context for the next block
-                for (auto& c : _window.current_context()) {
+                for (auto &c: _window.current_context()) {
                     c = multiplexer.lkt8bits2chr[c];
                     assert(c >= _window.min_value && c <= _window.max_value);
                 }
@@ -1208,6 +1295,8 @@ class DeflateThreadRandomAccess : public DeflateThread
             }
 
         } else if (res == block_result::CAUGHT_UP_DOWNSTREAM || res == block_result::LAST_BLOCK) {
+            PRINT_DEBUG("%d decompress loop return CAUGHT_UP_DOWNSTREAM||LAST_BLOCK\n", threadNum);
+
             wait_for_context_borrow(); // the narrow_window is mutated from this point
             _window.clear();
 
@@ -1215,8 +1304,8 @@ class DeflateThreadRandomAccess : public DeflateThread
             if (!prepare_lookup_table(sync_bitpos)) return false;
 
             // Translate the context for the next block
-            auto* p = wide_window.current_context().begin();
-            for (auto& c : _window.current_context()) {
+            auto *p = wide_window.current_context().begin();
+            for (auto &c: _window.current_context()) {
                 c = multiplexer.lkt16bits2chr[*p++];
                 assert(c >= _window.min_value && c <= _window.max_value);
             }
@@ -1234,14 +1323,13 @@ class DeflateThreadRandomAccess : public DeflateThread
         }
 
         if (res == block_result::LAST_BLOCK) {
-            PRINT_DEBUG("%p last block at %lu\n", (void*)this, _in_stream.position_bits());
+            PRINT_DEBUG("%d last block at %lu\n", threadNum, _in_stream.position_bits());
         }
         return true;
     }
 
-  private:
-    bool prepare_lookup_table(size_t sync_bitpos)
-    {
+private:
+    bool prepare_lookup_table(size_t sync_bitpos) {
         auto upstream_context = _up_stream->get_context();
         if (upstream_context.second == unset_stop_pos) {
             // Upstream decompressor failed
@@ -1257,27 +1345,25 @@ class DeflateThreadRandomAccess : public DeflateThread
         return true;
     }
 
-    malloc_span<uint8_t>                                  buffer;
-    Window<uint16_t>                                      wide_window = {};
+    malloc_span<uint8_t> buffer;
+    Window<uint16_t> wide_window = {};
     BackrefMultiplexer<Window<uint8_t>, Window<uint16_t>> multiplexer = {};
-    DeflateThread*                                        _up_stream  = nullptr;
+    DeflateThread *_up_stream = nullptr;
+
 };
 
-class ConsumerSync
-{
-  public:
+class ConsumerSync {
+public:
     using lock_t = std::unique_lock<std::mutex>;
 
-    void wait(ConsumerInterface& consumer)
-    {
+    void wait(ConsumerInterface &consumer) {
         lock_t lock{_mut};
         while (_section_idx != consumer.section_idx() || _chunk_idx != consumer.chunk_idx())
             _cond.wait(lock);
         lock.release();
     }
 
-    void notify(ConsumerInterface& consumer)
-    {
+    void notify(ConsumerInterface &consumer) {
         if (not consumer.is_last_chunk()) {
             _chunk_idx++;
         } else {
@@ -1288,29 +1374,33 @@ class ConsumerSync
         _mut.unlock();
     }
 
-  private:
-    std::mutex              _mut  = {};
+private:
+    std::mutex _mut = {};
     std::condition_variable _cond = {};
 
     unsigned _section_idx = 0;
-    unsigned _chunk_idx   = 0;
+    unsigned _chunk_idx = 0;
 };
 
-template<typename Consumer> class ConsumerWrapper : public ConsumerInterface
-{
-  public:
-    ConsumerWrapper(Consumer& consumer, ConsumerSync* sync = nullptr)
-      : _consumer(consumer)
-      , _sync(sync)
-    {}
+template<typename Consumer>
+class ConsumerWrapper : public ConsumerInterface {
+public:
+    ConsumerWrapper(Consumer &consumer, ConsumerSync *sync = nullptr)
+            : _consumer(consumer), _sync(sync) {}
 
-    ConsumerWrapper(const ConsumerWrapper&) noexcept = default;
-    ConsumerWrapper& operator=(const ConsumerWrapper&) noexcept = default;
+    ConsumerWrapper(const ConsumerWrapper &)
 
-  protected:
+    noexcept =
+    default;
+
+    ConsumerWrapper &operator=(const ConsumerWrapper &)
+
+    noexcept =
+    default;
+
+protected:
     // Flushes the already resolved context in ~32KB step, last indicates if this is the last of the chunk
-    virtual void flush(span<const uint8_t> data, bool last)
-    {
+    virtual void flush(span<const uint8_t> data, bool last) {
         if (not last) {
             if (unlikely(_sync != nullptr && _resolved_idx == 0)) _sync->wait(*this);
 
@@ -1325,34 +1415,33 @@ template<typename Consumer> class ConsumerWrapper : public ConsumerInterface
         }
     }
 
-    virtual void flush(span<uint16_t>      data16bits,
+    virtual void flush(span<uint16_t> data16bits,
                        span<const uint8_t> lkt16bits,
-                       span<uint8_t>       data8bits,
-                       span<const uint8_t> lkt8bits)
-    {
+                       span<uint8_t> data8bits,
+                       span<const uint8_t> lkt8bits) {
         if (_sync != nullptr) _sync->wait(*this);
 
         slice_span(data16bits, 16 << 10, [&](span<uint16_t> slice) {
-            uint8_t* s = reinterpret_cast<uint8_t*>(slice.begin());
-            uint8_t* p = s;
-            for (auto sym : slice)
+            uint8_t *s = reinterpret_cast<uint8_t *>(slice.begin());
+            uint8_t *p = s;
+            for (auto sym: slice)
                 *p++ = lkt16bits[sym];
             _consumer(span<const uint8_t>(s, p));
         });
 
         slice_span(data8bits, 32 << 10, [&](span<uint8_t> slice) {
-            for (auto& sym : slice)
+            for (auto &sym: slice)
                 sym = lkt8bits[sym];
             _consumer(span<const uint8_t>(slice));
         });
         if (_sync != nullptr) _sync->notify(*this);
     }
 
-  private:
-    template<typename T, typename F> static void slice_span(span<T> data, size_t n, F f)
-    {
-        T* start = data.begin();
-        T* end   = start + n;
+private:
+    template<typename T, typename F>
+    static void slice_span(span<T> data, size_t n, F f) {
+        T *start = data.begin();
+        T *end = start + n;
         for (;; start = end, end += n) {
             if (end < data.end()) {
                 f(span<T>(start, end));
@@ -1363,26 +1452,25 @@ template<typename Consumer> class ConsumerWrapper : public ConsumerInterface
         }
     }
 
-    Consumer&     _consumer;
-    ConsumerSync* _sync         = nullptr;
-    unsigned      _resolved_idx = 0;
+    Consumer &_consumer;
+    ConsumerSync *_sync = nullptr;
+    unsigned _resolved_idx = 0;
 };
 
-struct OutputConsumer
-{
-    void operator()(span<const uint8_t> data) const { write(STDOUT_FILENO, data.begin(), data.size()); }
+struct OutputConsumer {
+    void operator()(span<const uint8_t> data) const {
+        write(STDOUT_FILENO, data.begin(), data.size());
+    }
 };
 
-struct LineCounter
-{
-    void operator()(span<const uint8_t> data)
-    {
-        size_t         count = 0;
-        const uint8_t* p     = data.begin();
-        const uint8_t* e     = data.end();
+struct LineCounter {
+    void operator()(span<const uint8_t> data) {
+        size_t count = 0;
+        const uint8_t *p = data.begin();
+        const uint8_t *e = data.end();
 
         for (;;) {
-            p = static_cast<const uint8_t*>(memchr(p, static_cast<int>('\n'), size_t(e - p)));
+            p = static_cast<const uint8_t *>(memchr(p, static_cast<int>('\n'), size_t(e - p)));
             if (p != nullptr) {
                 count += 1;
                 p++;

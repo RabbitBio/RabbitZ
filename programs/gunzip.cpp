@@ -37,17 +37,15 @@
 #include <unistd.h>
 #include <utime.h>
 
-struct options
-{
-    bool     count_lines;
+struct options {
+    bool count_lines;
     unsigned nthreads;
 };
 
-static const tchar* const optstring = T(":hnlt:V");
+static const tchar *const optstring = T(":hnlt:V");
 
 static void
-show_usage(FILE* fp)
-{
+show_usage(FILE *fp) {
     fprintf(fp,
             "Usage: %" TS " [-l] [-t n] FILE...\n"
             "Decompress the specified FILEs.\n"
@@ -61,23 +59,23 @@ show_usage(FILE* fp)
 }
 
 static void
-show_version(void)
-{
+show_version(void) {
     printf("Pugz parallel gzip decompression program\n"
            "Copyright 2019 Maël Kerbiriou, Rayan Chikhi\n"
            "\n"
            "Based on:\n"
-           "gzip compression program v" LIBDEFLATE_VERSION_STRING "\n"
-           "Copyright 2016 Eric Biggers\n"
-           "\n"
-           "This program is free software which may be modified and/or redistributed\n"
-           "under the terms of the MIT license.  There is NO WARRANTY, to the extent\n"
-           "permitted by law.  See the COPYING file for details.\n");
+           "gzip compression program v"
+    LIBDEFLATE_VERSION_STRING
+    "\n"
+    "Copyright 2016 Eric Biggers\n"
+    "\n"
+    "This program is free software which may be modified and/or redistributed\n"
+    "under the terms of the MIT license.  There is NO WARRANTY, to the extent\n"
+    "permitted by law.  See the COPYING file for details.\n");
 }
 
 static int
-stat_file(struct file_stream* in, stat_t* stbuf, bool allow_hard_links)
-{
+stat_file(struct file_stream *in, stat_t *stbuf, bool allow_hard_links) {
     if (tfstat(in->fd, stbuf) != 0) {
         msg("%" TS ": unable to stat file", in->name);
         return -1;
@@ -99,12 +97,11 @@ stat_file(struct file_stream* in, stat_t* stbuf, bool allow_hard_links)
 }
 
 static int
-decompress_file(const tchar* path, const struct options* options)
-{
+decompress_file(const tchar *path, const struct options *options) {
     struct file_stream in;
-    stat_t             stbuf;
-    int                ret;
-    const byte*        in_p;
+    stat_t stbuf;
+    int ret;
+    const byte *in_p;
 
     ret = xopen_for_read(path, true, &in);
     if (ret != 0) goto out_free_paths;
@@ -116,43 +113,46 @@ decompress_file(const tchar* path, const struct options* options)
     ret = map_file_contents(&in, size_t(stbuf.st_size));
     if (ret != 0) goto out_close_in;
 
-    in_p = static_cast<const byte*>(in.mmap_mem);
+    in_p = static_cast<const byte *>(in.mmap_mem);
     if (options->count_lines) {
         LineCounter line_counter{};
         libdeflate_gzip_decompress(in_p, in.mmap_size, options->nthreads, line_counter, nullptr);
     } else {
         OutputConsumer output{};
-        ConsumerSync   sync{};
+        ConsumerSync sync{};
         libdeflate_gzip_decompress(in_p, in.mmap_size, options->nthreads, output, &sync);
     }
 
     ret = 0;
 
-out_close_in:
+    out_close_in:
     xclose(&in);
-out_free_paths:
+    out_free_paths:
     return ret;
 }
 
 int
-tmain(int argc, tchar* argv[])
-{
-    tchar*         default_file_list[] = {nullptr};
+tmain(int argc, tchar *argv[]) {
+    tchar *default_file_list[] = {nullptr};
     struct options options;
-    int            opt_char;
-    int            i;
-    int            ret;
+    int opt_char;
+    int i;
+    int ret;
 
     _program_invocation_name = get_filename(argv[0]);
 
     options.count_lines = false;
-    options.nthreads    = 1;
+    options.nthreads = 1;
 
     while ((opt_char = tgetopt(argc, argv, optstring)) != -1) {
         switch (opt_char) {
-            case 'l': options.count_lines = true; break;
+            case 'l':
+                options.count_lines = true;
+                break;
 
-            case 'h': show_usage(stdout); return 0;
+            case 'h':
+                show_usage(stdout);
+                return 0;
             case 'n':
                 /*
                  * -n means don't save or restore the original filename
@@ -166,8 +166,12 @@ tmain(int argc, tchar* argv[])
                 options.nthreads = unsigned(atoi(toptarg));
                 fprintf(stderr, "using %d threads for decompression (experimental)\n", options.nthreads);
                 break;
-            case 'V': show_version(); return 0;
-            default: show_usage(stderr); return 1;
+            case 'V':
+                show_version();
+                return 0;
+            default:
+                show_usage(stderr);
+                return 1;
         }
     }
 
